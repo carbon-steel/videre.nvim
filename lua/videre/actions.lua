@@ -349,10 +349,13 @@ function M.MakeChangeTypeMapping(buf, videre_tbl, layer_n, cell_n)
                 local key, val = v[1], v[2]
                 local val_type = utils.ValueType(val)
 
-                cell.data[key] = nil
                 if val_type == "array" or val_type == "object" then
-                    cell.data[i] = videre_tbl.layers[val.layer].cells[val.cell].data
+                    local nested_data = val.targets and cell.data[key]
+                        or videre_tbl.layers[val.layer].cells[val.cell].data
+                    cell.data[key] = nil
+                    cell.data[i] = nested_data
                 else
+                    cell.data[key] = nil
                     ---@diagnostic disable-next-line: assign-type-mismatch
                     cell.data[i] = val
                 end
@@ -366,10 +369,13 @@ function M.MakeChangeTypeMapping(buf, videre_tbl, layer_n, cell_n)
 
                 local new_key = "i_" .. tostring(key - 1 + config.index_base)
 
-                cell.data[key] = nil
                 if val_type == "array" or val_type == "object" then
-                    cell.data[new_key] = videre_tbl.layers[val.layer].cells[val.cell].data
+                    local nested_data = val.targets and cell.data[key]
+                        or videre_tbl.layers[val.layer].cells[val.cell].data
+                    cell.data[key] = nil
+                    cell.data[new_key] = nested_data
                 else
+                    cell.data[key] = nil
                     ---@diagnostic disable-next-line: assign-type-mismatch
                     cell.data[new_key] = val
                 end
