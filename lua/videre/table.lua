@@ -775,7 +775,9 @@ function M.JumpToCellAndValue(tbl, layer_num, cell_num, val)
         return
     end
 
-    local row = cell.top_render_line
+    -- top_render_line is 1-indexed within the layer; buffer has no header line offset,
+    -- so subtract 1 to get the 1-indexed buffer line of the cell's top border.
+    local row = cell.top_render_line - 1
 
     local total_display_rows = cell.total_display_rows or #cell.values
     local jump = true
