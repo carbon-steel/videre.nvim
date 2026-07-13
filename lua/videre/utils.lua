@@ -97,43 +97,27 @@ function M.DisplayLines(str)
     local expand_tabs = config.expand_tabs
     local expand_newlines = config.expand_newlines
 
-    local split_lines = {}
-    local current_line = {}
-    local str_idx = 1
-    while str_idx <= #str do
-        local c = str:sub(str_idx, str_idx)
-        if c == [[\]] then
-            local next = str:sub(str_idx + 1, str_idx + 1)
-            if next == [[\]] then
-                current_line[#current_line + 1] = [[\\]]
-                str_idx = str_idx + 2
-            elseif next == "n" and expand_newlines then
-                split_lines[#split_lines + 1] = table.concat(current_line)
-                current_line = {}
-                str_idx = str_idx + 2
-            elseif next == "r" and expand_newlines then
-                if str:sub(str_idx + 2, str_idx + 3) == [[\n]] then
-                    split_lines[#split_lines + 1] = table.concat(current_line)
-                    current_line = {}
-                    str_idx = str_idx + 4
-                else
-                    current_line[#current_line + 1] = c .. next
-                    str_idx = str_idx + 2
-                end
-            elseif next == "t" and expand_tabs then
-                current_line[#current_line + 1] = string.rep(" ", tab_width)
-                str_idx = str_idx + 2
-            else
-                current_line[#current_line + 1] = c .. next
-                str_idx = str_idx + 2
-            end
-        else
-            current_line[#current_line + 1] = c
-            str_idx = str_idx + 1
-        end
+    local ok, raw = pcall(vim.json.decode, str)
+    if not ok then
+        raw = str
     end
 
-    split_lines[#split_lines + 1] = table.concat(current_line)
+    -- \b and \f have no config toggle and always stay as visible escape text.
+    raw = raw:gsub("\b", "\\b"):gsub("\f", "\\f")
+
+    if expand_newlines then
+        raw = raw:gsub("\r\n", "\n"):gsub("\r", "\n")
+    else
+        raw = raw:gsub("\r\n", "\\r\\n"):gsub("\r", "\\r"):gsub("\n", "\\n")
+    end
+
+    if expand_tabs then
+        raw = raw:gsub("\t", string.rep(" ", tab_width))
+    else
+        raw = raw:gsub("\t", "\\t")
+    end
+
+    local split_lines = expand_newlines and vim.split(raw, "\n", { plain = true }) or { raw }
 
     if config.max_line_width == 0 then
         return split_lines

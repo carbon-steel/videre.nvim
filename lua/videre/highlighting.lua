@@ -73,6 +73,9 @@ end
 ---@param line integer
 ---@param text string
 ---@param string_start integer
+-- text is DisplayLines output, which is fully unescaped except \b, \f, and
+-- (when their config toggle is off) \n, \r, \t — those are the only \X pairs
+-- left to highlight here.
 local function highlight_escapes(bufnr, line, text, string_start)
     string_start = string_start or 0
 
