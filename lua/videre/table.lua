@@ -398,170 +398,86 @@ local function render_layer_to_string(layer, height, is_root, tbl)
     return rows
 end
 
+---@class VidereConnectionGroup
+---@field from_render_line integer
+---@field target_rows integer[] ascending-sorted render lines this connection exits to
+---@field is_up boolean whether targets lie above (true) or below (false) from_render_line
+
+-- A connection walks column-by-column from its source row toward the furthest
+-- target row, detouring right (with connection_spacing) whenever the next
+-- vertical step is blocked — the same walk a plain (single-target) connection
+-- always used. A fan-out is just a connection with more than one target row:
+-- every target row it passes on the way gets a branch exit (an unbroken
+-- horizontal line to the right edge) instead of a plain vertical
+-- pass-through, but the shared trunk/spine column and detour logic is
+-- identical either way.
 ---@param map string[][]
----@param branch VidereBranchConnection
-local function resolve_branch_connection(map, branch)
-    local from_row = branch.from_render_line
-
-    local target_rows = {}
-    for _, target in ipairs(branch.targets) do
-        if target.to_render_line then
-            target_rows[#target_rows + 1] = target.to_render_line
-        end
-    end
-    table.sort(target_rows)
-
-    if #target_rows == 0 then return end
-
-    local min_target = target_rows[1]
-    local max_target = target_rows[#target_rows]
-    local spine_top = math.min(from_row, min_target)
-    local spine_bottom = math.max(from_row, max_target)
-
-    local is_target_row = {}
-    for _, r in ipairs(target_rows) do
-        is_target_row[r] = true
-    end
-
-    -- Find the first column that is free for the entire spine range so that
-    -- the branch spine does not overlap other connection routing at that column.
-    -- Target rows also get a horizontal exit drawn from spine_col all the way
-    -- to the right edge, so those rows must be checked all the way across —
-    -- otherwise the exit can overwrite a vertical segment from an unrelated
-    -- connection that happens to pass through further right. Try every column
-    -- (not just multiples of the connection spacing) so the spine can slot into
-    -- any gap already left by other connections instead of jumping straight
-    -- past a free column into one that collides with an exit run.
-    local spine_col = 1
-    while spine_col <= #map[spine_top] do
-        local clear = true
-        for row = spine_top, spine_bottom do
-            local last_col = is_target_row[row] and #map[row] or spine_col
-            for col = spine_col, last_col do
-                if map[row][col] ~= config.outside_space then
-                    clear = false
-                    break
-                end
-            end
-            if not clear then break end
-        end
-        if clear then break end
-        spine_col = spine_col + 1
-    end
-
-    -- Normalize all map rows to at least spine_col width before drawing.
-    -- Previous branch exits may have extended only some rows; rows that were
-    -- not target rows stay shorter, which breaks left_render_col/hover math.
-    -- Extend with horizontal-line when the row already ends in one (continuing
-    -- an exit); otherwise use outside_space.
-    local horiz = boxes.HorizontalLine()
-    -- Characters that imply a rightward exit: only these rows should be padded
-    -- with horizontal lines. Vertical-spine and source-turn-only characters (│, ╯, ╮)
-    -- do not continue rightward and must not get horizontal tails.
-    local rightward = {
-        [horiz] = true,
-        [boxes.FromDownTurnRight()] = true,
-        [boxes.FromUpTurnRight()] = true,
-        [boxes.BranchFromSpine()] = true,
-        [boxes.BranchTeeDown()] = true,
-        [boxes.BranchTeeUp()] = true,
-        [boxes.BranchCross()] = true,
-    }
-    for i = 1, #map do
-        local r = map[i]
-        local n = #r
-        if n < spine_col then
-            local fill = (n > 0 and rightward[r[n]]) and horiz or config.outside_space
-            for j = n + 1, spine_col do
-                r[j] = fill
-            end
-        end
-    end
-
-    local is_target = is_target_row
-
-    -- Draw horizontal trunk from source row to spine column
-    for col = 1, spine_col - 1 do
-        map[from_row][col] = boxes.HorizontalLine()
-    end
-
-    -- Set junction character at (from_row, spine_col)
-    local has_up = from_row > spine_top
-    local has_down = from_row < spine_bottom
-    if is_target[from_row] then
-        if has_up and has_down then
-            map[from_row][spine_col] = boxes.BranchCross()
-        elseif has_down then
-            map[from_row][spine_col] = boxes.BranchTeeDown()
-        elseif has_up then
-            map[from_row][spine_col] = boxes.BranchTeeUp()
-        else
-            map[from_row][spine_col] = boxes.HorizontalLine()
-        end
-    else
-        if has_up and has_down then
-            map[from_row][spine_col] = boxes.BranchTeeLeft()
-        elseif has_down then
-            map[from_row][spine_col] = boxes.FromRightTurnDown()
-        elseif has_up then
-            map[from_row][spine_col] = boxes.FromRightTurnUp()
-        else
-            map[from_row][spine_col] = boxes.HorizontalLine()
-        end
-    end
-
-    -- Draw spine and branch exits for each row in range
-    for row = spine_top, spine_bottom do
-        if row ~= from_row then
-            local row_has_up = row > spine_top
-            local row_has_down = row < spine_bottom
-
-            if is_target[row] then
-                if row_has_up and row_has_down then
-                    map[row][spine_col] = boxes.BranchFromSpine()
-                elseif row_has_down then
-                    map[row][spine_col] = boxes.FromUpTurnRight()
-                else
-                    map[row][spine_col] = boxes.FromDownTurnRight()
-                end
-            else
-                map[row][spine_col] = boxes.VerticalLine()
-            end
-        end
-
-        -- Horizontal exit to right edge for target rows (including from_row if it's a target)
-        if is_target[row] then
-            for col = spine_col + 1, #map[row] do
-                map[row][col] = boxes.HorizontalLine()
-            end
-        end
-    end
-end
-
----@param map string[][]
----@param conn VidereConnection
+---@param conn VidereConnectionGroup
 local function resolve_connection(map, conn)
-    local row, target, col = conn.from_render_line, conn.to_render_line, 1
-    local last_was_horizontal = true
-    local is_increasing = row > target
+    local row = conn.from_render_line
+    local is_up = conn.is_up
+    local target_rows = conn.target_rows
 
-    while row ~= target or col ~= #map[row] + 1 do
-        local new_row, new_col, new_is_horizontal = row, col, false;
-        if row > target and map[row - 1][col] == config.outside_space then
+    local is_target = {}
+    for _, r in ipairs(target_rows) do
+        is_target[r] = true
+    end
+    local final_target = is_up and target_rows[1] or target_rows[#target_rows]
+
+    -- Start at the first free column on the source row so that a second
+    -- connection group sharing the same from_render_line (a fan-out with both
+    -- up and down targets draws as two groups from one row) routes around
+    -- whatever the first group already drew instead of overwriting it.
+    local col = 1
+    while map[row][col] ~= config.outside_space do
+        col = col + 1
+    end
+
+    local last_was_horizontal = true
+
+    -- A correctly-sized map always lets this walk terminate within a bounded
+    -- number of steps (roughly one per row crossed, plus a few per detour).
+    -- If width was under-reserved, a blocked vertical move can make the walk
+    -- march right forever instead of reaching final_target — fail loudly
+    -- here rather than growing map[row] indefinitely into a table overflow.
+    local max_iterations = (#map + #map[row]) * 4
+    local iterations = 0
+    while row ~= final_target or col ~= #map[row] + 1 do
+        iterations = iterations + 1
+        if iterations > max_iterations then
+            error("resolve_connection: exceeded " .. max_iterations .. " iterations without reaching target "
+                .. "(from_render_line=" .. conn.from_render_line .. ", is_up=" .. tostring(is_up)
+                .. ") - connector width was likely under-reserved")
+        end
+        local new_row, new_col, new_is_horizontal = row, col, false
+        if is_up and row > final_target and map[row - 1][col] == config.outside_space then
             new_row = row - 1
-        elseif row < target and map[row + 1][col] == config.outside_space then
+        elseif not is_up and row < final_target and map[row + 1][col] == config.outside_space then
             new_row = row + 1
         else
             new_col, new_is_horizontal = col + 1, true
         end
 
-        if last_was_horizontal and new_is_horizontal then
+        if new_row ~= row and is_target[row] then
+            if row == conn.from_render_line then
+                -- The trunk's own row is also a target (e.g. a fan-out element
+                -- rendering on the same row as its parent key): only one side
+                -- of the spine exists here, so it's a tee rather than a
+                -- through-spine junction.
+                map[row][col] = is_up and boxes.BranchTeeUp() or boxes.BranchTeeDown()
+            else
+                map[row][col] = boxes.BranchFromSpine()
+            end
+            for c = col + 1, #map[row] do
+                map[row][c] = boxes.HorizontalLine()
+            end
+        elseif last_was_horizontal and new_is_horizontal then
             map[row][col] = boxes.HorizontalLine()
         elseif not last_was_horizontal and not new_is_horizontal then
             map[row][col] = boxes.VerticalLine()
-        elseif not last_was_horizontal and new_is_horizontal and is_increasing then
+        elseif not last_was_horizontal and new_is_horizontal and is_up then
             map[row][col] = boxes.FromUpTurnRight()
-        elseif not last_was_horizontal and new_is_horizontal and not is_increasing then
+        elseif not last_was_horizontal and new_is_horizontal and not is_up then
             map[row][col] = boxes.FromDownTurnRight()
         elseif last_was_horizontal and not new_is_horizontal then
             for _ = 1, config.connection_spacing do
@@ -571,7 +487,7 @@ local function resolve_connection(map, conn)
 
             new_col = col
 
-            if is_increasing then
+            if is_up then
                 map[row][col] = boxes.FromRightTurnUp()
             else
                 map[row][col] = boxes.FromRightTurnDown()
@@ -582,79 +498,115 @@ local function resolve_connection(map, conn)
     end
 end
 
+-- A fan-out (branch) value is split into an "up" group (targets above its
+-- from_render_line) and a "down" group (targets below), each drawn as its
+-- own VidereConnectionGroup sharing the source row with a plain trunk. From
+-- the perspective of every other connection, a fan-out group is then
+-- indistinguishable from a plain connection to a single, tall target — it
+-- occupies one column across its row range — so both kinds share the same
+-- connections_up/connections_down lists and the same run-counting for width.
 ---@param layer VidereLayer
 ---@param tbl VidereTable
----@return VidereConnection[], VidereConnection[], VidereBranchConnection[], integer
+---@return VidereConnectionGroup[], VidereConnectionGroup[], integer
 local function aggregate_connection_objects_for_layer(layer, tbl)
-    ---@type VidereConnection[]
+    ---@type VidereConnectionGroup[]
     local connections_up = {}
 
-    ---@type VidereConnection[]
+    ---@type VidereConnectionGroup[]
     local connections_down = {}
-
-    ---@type VidereBranchConnection[]
-    local branch_connections = {}
 
     local current_run = 0
     local width = 1
     local current_type_is_up = nil
-    local branch_count = 0
+
+    ---@param own_groups_by_row table<integer, VidereConnectionGroup>
+    ---@param other_groups_by_row table<integer, VidereConnectionGroup>
+    ---@param from_render_line integer
+    ---@param to_render_line integer
+    ---@param is_up boolean
+    local function add_target(own_groups_by_row, other_groups_by_row, from_render_line, to_render_line, is_up)
+        local group = own_groups_by_row[from_render_line]
+        if not group then
+            group = { from_render_line = from_render_line, target_rows = {}, is_up = is_up }
+            own_groups_by_row[from_render_line] = group
+            if is_up then
+                connections_up[#connections_up + 1] = group
+            else
+                connections_down[#connections_down + 1] = group
+            end
+
+            if other_groups_by_row[from_render_line] then
+                -- A sibling group already claimed a slot on this exact row (a
+                -- fan-out with targets on both sides splits into an up-group and
+                -- a down-group that draw concurrently) — this one needs its own
+                -- slot too, not a reused one.
+                current_run = current_run + 1
+            elseif is_up == current_type_is_up then
+                current_run = current_run + 1
+            else
+                current_run = 1
+                current_type_is_up = is_up
+            end
+            width = math.max(width, current_run)
+        end
+        group.target_rows[#group.target_rows + 1] = to_render_line
+    end
 
     for _, cell in ipairs(layer.cells) do
         if not cell.is_hidden then
+            local groups_up_by_row = {}
+            local groups_down_by_row = {}
+
             for i, entry in ipairs(cell.values) do
                 local val = entry[2]
                 local value_type = utils.ValueType(val)
                 if value_type == "array" or value_type == "object" then
+                    local from_render_line = cell.top_render_line + (entry.row_offset or i)
+
                     if val.targets then
-                        -- VidereBranchConnection: set from_render_line and each target's to_render_line
-                        val.from_render_line = cell.top_render_line + (entry.row_offset or i)
+                        -- VidereBranchConnection: fan out to each target's cell,
+                        -- split by whether the target is above or below this row.
+                        val.from_render_line = from_render_line
                         for _, target in ipairs(val.targets) do
                             local target_cell = tbl.layers[target.layer].cells[target.cell]
                             target.to_render_line = not target_cell.is_hidden and target_cell.top_render_line or nil
+
+                            if target.to_render_line then
+                                -- Same-row targets have no direction of their own; group them
+                                -- with the "down" side, matching a same-row plain connection.
+                                local is_up = from_render_line > target.to_render_line
+                                add_target(is_up and groups_up_by_row or groups_down_by_row,
+                                    is_up and groups_down_by_row or groups_up_by_row,
+                                    from_render_line, target.to_render_line, is_up)
+                            end
                         end
-                        ---@diagnostic disable-next-line: assign-type-mismatch
-                        branch_connections[#branch_connections + 1] = val
-                        -- Each branch may need its own column slot to avoid overlapping other routing
-                        branch_count = branch_count + 1
-                        current_run = 1
-                        current_type_is_up = nil
-                        width = math.max(width, current_run)
                     else
-                        val.from_render_line = cell.top_render_line + (entry.row_offset or i)
+                        val.from_render_line = from_render_line
                         val.to_render_line = tbl.layers[val.layer].cells[val.cell].top_render_line
 
-                        ---@type boolean|nil
+                        -- Same-row (from_render_line == to_render_line) connections have no
+                        -- direction; group them with "down" to match resolve_connection's
+                        -- straight horizontal-sweep behavior when is_up is false.
                         local is_up = val.from_render_line > val.to_render_line
-
-                        if val.from_render_line == val.to_render_line then
-                            is_up = nil
-                        end
-
-                        if is_up then
-                            ---@diagnostic disable-next-line: assign-type-mismatch
-                            connections_up[#connections_up + 1] = val
-                        else
-                            ---@diagnostic disable-next-line: assign-type-mismatch
-                            connections_down[#connections_down + 1] = val
-                        end
-
-                        if is_up == current_type_is_up and is_up ~= nil then
-                            current_run = current_run + 1
-                            width = math.max(width, current_run)
-                        else
-                            current_run = 1
-                            current_type_is_up = is_up
-                        end
+                        add_target(is_up and groups_up_by_row or groups_down_by_row,
+                            is_up and groups_down_by_row or groups_up_by_row,
+                            val.from_render_line, val.to_render_line, is_up)
                     end
                 end
+            end
+
+            for _, group in pairs(groups_up_by_row) do
+                table.sort(group.target_rows)
+            end
+            for _, group in pairs(groups_down_by_row) do
+                table.sort(group.target_rows)
             end
         end
     end
 
-    width = (width + branch_count) * (config.connection_spacing + 1) + config.connection_spacing
+    width = width * (config.connection_spacing + 1) + config.connection_spacing
 
-    return connections_up, connections_down, branch_connections, width
+    return connections_up, connections_down, width
 end
 
 ---@param tbl VidereTable
@@ -662,7 +614,7 @@ end
 ---@param height integer
 ---@return string[]
 local function create_connections_for_layer(tbl, layer, height)
-    local connections_up, connections_down, branch_connections, width = aggregate_connection_objects_for_layer(layer, tbl)
+    local connections_up, connections_down, width = aggregate_connection_objects_for_layer(layer, tbl)
 
     local map = {}
     for r = 1, height do
@@ -680,14 +632,6 @@ local function create_connections_for_layer(tbl, layer, height)
 
     for i = #connections_down, 1, -1 do
         resolve_connection(map, connections_down[i])
-    end
-
-    -- Branch connections are drawn after normal connections. resolve_branch_connection
-    -- picks its spine column by scanning for a column that's clear across both its
-    -- spine range and (for target rows) the full horizontal exit run, so it routes
-    -- around whatever normal connections already occupy instead of overwriting them.
-    for _, branch in ipairs(branch_connections) do
-        resolve_branch_connection(map, branch)
     end
 
     for i, row in pairs(map) do
