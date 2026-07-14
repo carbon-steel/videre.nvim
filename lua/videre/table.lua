@@ -668,7 +668,13 @@ local function create_connections_for_layer(tbl, layer, height)
     for i = #connections_down, 1, -1 do
         local conn = connections_down[i]
         local shared_col = up_trunk_col_by_row[conn.from_render_line]
-        if shared_col then
+        -- Another down-group drawn earlier in this same reverse pass may have
+        -- already routed through (from_render_line + 1, shared_col) -- e.g. it
+        -- detoured into that exact column while avoiding its own siblings.
+        -- Only merge into the up-group's trunk if that cell is still free;
+        -- otherwise fall back to this connection's own independent turn so we
+        -- don't overwrite whatever already occupies it.
+        if shared_col and map[conn.from_render_line + 1][shared_col] == config.outside_space then
             map[conn.from_render_line][shared_col] = boxes.BranchTeeLeft()
             resolve_connection(map, conn, { row = conn.from_render_line + 1, col = shared_col, last_was_horizontal = false })
         else
