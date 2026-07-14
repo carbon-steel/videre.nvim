@@ -403,6 +403,11 @@ end
 ---@field target_rows integer[] ascending-sorted render lines this connection exits to
 ---@field is_up boolean whether targets lie above (true) or below (false) from_render_line
 
+---@class VidereWalkStart
+---@field row integer
+---@field col integer
+---@field last_was_horizontal boolean
+
 -- A connection walks column-by-column from its source row toward the furthest
 -- target row, detouring right (with connection_spacing) whenever the next
 -- vertical step is blocked — the same walk a plain (single-target) connection
@@ -413,8 +418,14 @@ end
 -- identical either way.
 ---@param map string[][]
 ---@param conn VidereConnectionGroup
-local function resolve_connection(map, conn)
-    local row = conn.from_render_line
+---@param start VidereWalkStart|nil resume an already-drawn trunk (used to
+---continue a sibling group's spine from the merged tee character) instead of
+---scanning for a fresh column on conn.from_render_line
+---@return integer trunk_col the column of the exit turn drawn on
+---conn.from_render_line, so a sibling connection sharing that row can merge
+---into it instead of drawing its own separate turn
+local function resolve_connection(map, conn, start)
+    local row = start and start.row or conn.from_render_line
     local is_up = conn.is_up
     local target_rows = conn.target_rows
 
@@ -424,16 +435,25 @@ local function resolve_connection(map, conn)
     end
     local final_target = is_up and target_rows[1] or target_rows[#target_rows]
 
-    -- Start at the first free column on the source row so that a second
-    -- connection group sharing the same from_render_line (a fan-out with both
-    -- up and down targets draws as two groups from one row) routes around
-    -- whatever the first group already drew instead of overwriting it.
-    local col = 1
-    while map[row][col] ~= config.outside_space do
-        col = col + 1
+    local col
+    if start then
+        col = start.col
+    else
+        -- Start at the first free column on the source row so that a second
+        -- connection group sharing the same from_render_line (a fan-out with both
+        -- up and down targets draws as two groups from one row) routes around
+        -- whatever the first group already drew instead of overwriting it.
+        col = 1
+        while map[row][col] ~= config.outside_space do
+            col = col + 1
+        end
     end
 
+    local trunk_col = nil
     local last_was_horizontal = true
+    if start then
+        last_was_horizontal = start.last_was_horizontal
+    end
 
     -- A correctly-sized map always lets this walk terminate within a bounded
     -- number of steps (roughly one per row crossed, plus a few per detour).
@@ -492,10 +512,16 @@ local function resolve_connection(map, conn)
             else
                 map[row][col] = boxes.FromRightTurnDown()
             end
+
+            if row == conn.from_render_line and trunk_col == nil then
+                trunk_col = col
+            end
         end
 
         row, col, last_was_horizontal = new_row, new_col, new_is_horizontal
     end
+
+    return trunk_col
 end
 
 -- A fan-out (branch) value is split into an "up" group (targets above its
@@ -626,12 +652,28 @@ local function create_connections_for_layer(tbl, layer, height)
         map[r] = row
     end
 
+    -- A fan-out whose targets lie on both sides of from_render_line splits into
+    -- an up-group and a down-group that both leave the same row. Track where
+    -- the up-group's exit turn lands so the down-group can merge into it
+    -- (one shared "┤" trunk) instead of drawing its own separate turn right
+    -- next to it.
+    local up_trunk_col_by_row = {}
     for _, conn in ipairs(connections_up) do
-        resolve_connection(map, conn)
+        local trunk_col = resolve_connection(map, conn)
+        if trunk_col then
+            up_trunk_col_by_row[conn.from_render_line] = trunk_col
+        end
     end
 
     for i = #connections_down, 1, -1 do
-        resolve_connection(map, connections_down[i])
+        local conn = connections_down[i]
+        local shared_col = up_trunk_col_by_row[conn.from_render_line]
+        if shared_col then
+            map[conn.from_render_line][shared_col] = boxes.BranchTeeLeft()
+            resolve_connection(map, conn, { row = conn.from_render_line + 1, col = shared_col, last_was_horizontal = false })
+        else
+            resolve_connection(map, conn)
+        end
     end
 
     for i, row in pairs(map) do
