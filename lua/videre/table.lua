@@ -677,6 +677,13 @@ local function create_connections_for_layer(tbl, layer, height)
         if shared_col and map[conn.from_render_line + 1][shared_col] == config.outside_space then
             map[conn.from_render_line][shared_col] = boxes.BranchTeeLeft()
             resolve_connection(map, conn, { row = conn.from_render_line + 1, col = shared_col, last_was_horizontal = false })
+        elseif shared_col then
+            -- Can't drop straight down through the up-group's trunk column, but
+            -- can still continue through it horizontally: turn the up-group's
+            -- exit turn into a through-tee ("┴") and keep walking right from
+            -- there instead of starting an unrelated turn from scratch.
+            map[conn.from_render_line][shared_col] = boxes.BranchTeeUp()
+            resolve_connection(map, conn, { row = conn.from_render_line, col = shared_col + 1, last_was_horizontal = true })
         else
             resolve_connection(map, conn)
         end
