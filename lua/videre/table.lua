@@ -418,20 +418,35 @@ local function resolve_branch_connection(map, branch)
     local spine_top = math.min(from_row, min_target)
     local spine_bottom = math.max(from_row, max_target)
 
+    local is_target_row = {}
+    for _, r in ipairs(target_rows) do
+        is_target_row[r] = true
+    end
+
     -- Find the first column that is free for the entire spine range so that
     -- the branch spine does not overlap other connection routing at that column.
-    local step = config.connection_spacing + 1
-    local spine_col = step
+    -- Target rows also get a horizontal exit drawn from spine_col all the way
+    -- to the right edge, so those rows must be checked all the way across —
+    -- otherwise the exit can overwrite a vertical segment from an unrelated
+    -- connection that happens to pass through further right. Try every column
+    -- (not just multiples of the connection spacing) so the spine can slot into
+    -- any gap already left by other connections instead of jumping straight
+    -- past a free column into one that collides with an exit run.
+    local spine_col = 1
     while spine_col <= #map[spine_top] do
         local clear = true
         for row = spine_top, spine_bottom do
-            if map[row][spine_col] ~= config.outside_space then
-                clear = false
-                break
+            local last_col = is_target_row[row] and #map[row] or spine_col
+            for col = spine_col, last_col do
+                if map[row][col] ~= config.outside_space then
+                    clear = false
+                    break
+                end
             end
+            if not clear then break end
         end
         if clear then break end
-        spine_col = spine_col + step
+        spine_col = spine_col + 1
     end
 
     -- Normalize all map rows to at least spine_col width before drawing.
@@ -463,10 +478,7 @@ local function resolve_branch_connection(map, branch)
         end
     end
 
-    local is_target = {}
-    for _, r in ipairs(target_rows) do
-        is_target[r] = true
-    end
+    local is_target = is_target_row
 
     -- Draw horizontal trunk from source row to spine column
     for col = 1, spine_col - 1 do
@@ -670,10 +682,10 @@ local function create_connections_for_layer(tbl, layer, height)
         resolve_connection(map, connections_down[i])
     end
 
-    -- TODO: branch connections are drawn after normal connections and write cells
-    -- unconditionally, so a branch trunk/exit can overwrite a vertical or turn
-    -- segment placed by a normal connection. Fix: draw branch connections first,
-    -- or add an occupancy guard in resolve_branch_connection.
+    -- Branch connections are drawn after normal connections. resolve_branch_connection
+    -- picks its spine column by scanning for a column that's clear across both its
+    -- spine range and (for target rows) the full horizontal exit run, so it routes
+    -- around whatever normal connections already occupy instead of overwriting them.
     for _, branch in ipairs(branch_connections) do
         resolve_branch_connection(map, branch)
     end
